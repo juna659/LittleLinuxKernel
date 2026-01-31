@@ -1,0 +1,376 @@
+#!/usr/bin/env python3
+"""
+gui.py - Simple GUI for Kernel-Add using PyQt6
+GUI sederhana - step by step improvement
+"""
+
+import sys
+import os
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QPushButton, QTextEdit, QLabel, QLineEdit, QTabWidget,
+    QGroupBox, QMessageBox, QInputDialog
+)
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtGui import QFont, QColor, QPalette
+
+# Import kernel components
+try:
+    from LinuxKernel import KernelAddCLI
+    KERNEL_AVAILABLE = True
+except ImportError:
+    KERNEL_AVAILABLE = False
+    print("⚠️  LinuxKernel.py not found")
+
+
+class CommandThread(QThread):
+    """Thread untuk execute commands tanpa freeze GUI"""
+    output_ready = pyqtSignal(str)
+    
+    def __init__(self, cli, command):
+        super().__init__()
+        self.cli = cli
+        self.command = command
+    
+    def run(self):
+        """Execute command dan emit output"""
+        import io
+        
+        # Parse command
+        parts = self.command.split()
+        if not parts:
+            return
+        
+        action = parts[0].lower()
+        args = parts[1:]
+        
+        # Capture output
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        
+        try:
+            if action in self.cli.commands:
+                self.cli.commands[action](args)
+            else:
+                print(f"❌ Unknown command: {action}")
+                print("Type 'help' for available commands")
+            
+            # Get output
+            output = sys.stdout.getvalue()
+            if output:
+                self.output_ready.emit(output)
+        
+        except Exception as e:
+            self.output_ready.emit(f"❌ Error: {e}")
+        
+        finally:
+            sys.stdout = old_stdout
+
+
+class KernelGUI(QMainWindow):
+    """Main GUI Window - Simple Version"""
+    
+    def __init__(self):
+        super().__init__()
+        
+        # Initialize kernel CLI
+        if KERNEL_AVAILABLE:
+            self.cli = KernelAddCLI()
+        else:
+            self.cli = None
+        
+        self.init_ui()
+    
+    def init_ui(self):
+        """Initialize UI - SIMPLE LAYOUT"""
+        
+        # Window setup
+        self.setWindowTitle("Kernel-Add GUI v1.0")
+        self.setGeometry(100, 100, 900, 650)
+        
+        # Central widget
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        
+        # Main layout
+        main_layout = QVBoxLayout()
+        central_widget.setLayout(main_layout)
+        
+        # ===== TITLE =====
+        title_label = QLabel("🐧 KERNEL-ADD CONTROL PANEL")
+        title_font = QFont("Arial", 16, QFont.Weight.Bold)
+        title_label.setFont(title_font)
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title_label.setStyleSheet("background-color: #2c3e50; color: white; padding: 10px;")
+        main_layout.addWidget(title_label)
+        
+        # ===== CONTENT LAYOUT =====
+        content_layout = QHBoxLayout()
+        main_layout.addLayout(content_layout)
+        
+        # ===== LEFT PANEL - Buttons =====
+        left_panel = QWidget()
+        left_panel.setMaximumWidth(220)
+        left_layout = QVBoxLayout()
+        left_panel.setLayout(left_layout)
+        
+        # Package Manager Group
+        pkg_group = QGroupBox("📦 Package Manager")
+        pkg_layout = QVBoxLayout()
+        
+        self.create_button(pkg_layout, "Update Packages", self.cmd_update)
+        self.create_button(pkg_layout, "List Installed", self.cmd_list)
+        self.create_button(pkg_layout, "Search Packages", self.cmd_search)
+        
+        pkg_group.setLayout(pkg_layout)
+        left_layout.addWidget(pkg_group)
+        
+        # Kernel Group
+        kernel_group = QGroupBox("🐧 Kernel")
+        kernel_layout = QVBoxLayout()
+        
+        self.create_button(kernel_layout, "Kernel Status", self.cmd_kstatus)
+        self.create_button(kernel_layout, "List Processes", self.cmd_ps)
+        self.create_button(kernel_layout, "Memory Info", self.cmd_mem)
+        
+        kernel_group.setLayout(kernel_layout)
+        left_layout.addWidget(kernel_group)
+        
+        # Drivers Group
+        driver_group = QGroupBox("🔧 Drivers")
+        driver_layout = QVBoxLayout()
+        
+        self.create_button(driver_layout, "List Drivers", self.cmd_lsmod)
+        self.create_button(driver_layout, "List Devices", self.cmd_lsdev)
+        
+        driver_group.setLayout(driver_layout)
+        left_layout.addWidget(driver_group)
+        
+        # Containers Group
+        container_group = QGroupBox("🐳 Containers")
+        container_layout = QVBoxLayout()
+        
+        self.create_button(container_layout, "List Containers", self.cmd_cps)
+        self.create_button(container_layout, "List Images", self.cmd_cimage)
+        
+        container_group.setLayout(container_layout)
+        left_layout.addWidget(container_group)
+        
+        # System buttons
+        clear_btn = QPushButton("Clear Output")
+        clear_btn.setStyleSheet("background-color: #e74c3c; color: white; font-weight: bold;")
+        clear_btn.clicked.connect(self.clear_output)
+        left_layout.addWidget(clear_btn)
+        
+        left_layout.addStretch()
+        
+        content_layout.addWidget(left_panel)
+        
+        # ===== RIGHT PANEL - Output & Command =====
+        right_panel = QWidget()
+        right_layout = QVBoxLayout()
+        right_panel.setLayout(right_layout)
+        
+        # Output label
+        output_label = QLabel("Output Console:")
+        output_label.setFont(QFont("Arial", 10, QFont.Weight.Bold))
+        right_layout.addWidget(output_label)
+        
+        # Output console
+        self.output_text = QTextEdit()
+        self.output_text.setReadOnly(True)
+        self.output_text.setFont(QFont("Courier", 9))
+        
+        # Terminal style
+        palette = self.output_text.palette()
+        palette.setColor(QPalette.ColorRole.Base, QColor("#1e1e1e"))
+        palette.setColor(QPalette.ColorRole.Text, QColor("#00ff00"))
+        self.output_text.setPalette(palette)
+        
+        right_layout.addWidget(self.output_text)
+        
+        # Command input
+        cmd_layout = QHBoxLayout()
+        
+        cmd_label = QLabel("Command:")
+        cmd_label.setFont(QFont("Arial", 10))
+        cmd_layout.addWidget(cmd_label)
+        
+        self.command_input = QLineEdit()
+        self.command_input.setFont(QFont("Courier", 10))
+        self.command_input.returnPressed.connect(self.execute_command)
+        cmd_layout.addWidget(self.command_input)
+        
+        exec_btn = QPushButton("Execute")
+        exec_btn.setStyleSheet("background-color: #27ae60; color: white; font-weight: bold;")
+        exec_btn.clicked.connect(self.execute_command)
+        cmd_layout.addWidget(exec_btn)
+        
+        right_layout.addLayout(cmd_layout)
+        
+        content_layout.addWidget(right_panel)
+        
+        # ===== STATUS BAR =====
+        self.statusBar().setStyleSheet("background-color: #34495e; color: white;")
+        if KERNEL_AVAILABLE:
+            self.statusBar().showMessage("✅ Kernel loaded - Ready")
+        else:
+            self.statusBar().showMessage("❌ Kernel not available - Demo mode")
+        
+        # ===== WELCOME MESSAGE =====
+        self.print_output("=" * 70)
+        self.print_output("  KERNEL-ADD GUI v1.0 (PyQt6)")
+        self.print_output("  Simple Interface for Kernel Management")
+        self.print_output("=" * 70)
+        self.print_output("")
+        if KERNEL_AVAILABLE:
+            self.print_output("✅ Kernel loaded successfully")
+            self.print_output("💡 Click buttons or type commands below")
+        else:
+            self.print_output("❌ Kernel not available - GUI demo mode")
+        self.print_output("")
+    
+    def create_button(self, layout, text, callback):
+        """Helper untuk create button"""
+        btn = QPushButton(text)
+        btn.clicked.connect(callback)
+        layout.addWidget(btn)
+        return btn
+    
+    def print_output(self, text):
+        """Print to output console"""
+        self.output_text.append(text)
+        self.output_text.ensureCursorVisible()
+    
+    def clear_output(self):
+        """Clear output console"""
+        self.output_text.clear()
+        self.print_output("Output cleared.")
+    
+    def execute_command(self):
+        """Execute custom command"""
+        if not KERNEL_AVAILABLE:
+            self.print_output("❌ Kernel not available")
+            return
+        
+        command = self.command_input.text().strip()
+        if not command:
+            return
+        
+        self.command_input.clear()
+        self.print_output(f"[localhost[@]MiniKernel]>-~& {command}")
+        
+        # Run command in thread
+        self.run_command_thread(command)
+    
+    def run_command_thread(self, command):
+        """Run command in background thread"""
+        self.thread = CommandThread(self.cli, command)
+        self.thread.output_ready.connect(self.handle_output)
+        self.thread.finished.connect(lambda: self.print_output(""))
+        self.thread.start()
+    
+    def handle_output(self, output):
+        """Handle command output"""
+        for line in output.split('\n'):
+            if line:
+                self.print_output(line)
+    
+    # ===== COMMAND HANDLERS =====
+    
+    def cmd_update(self):
+        """Update packages"""
+        if not KERNEL_AVAILABLE:
+            return
+        self.print_output("[Executing: update]")
+        self.run_command_thread("update")
+    
+    def cmd_list(self):
+        """List packages"""
+        if not KERNEL_AVAILABLE:
+            return
+        self.print_output("[Executing: list]")
+        self.run_command_thread("list")
+    
+    def cmd_search(self):
+        """Search packages"""
+        if not KERNEL_AVAILABLE:
+            return
+        
+        query, ok = QInputDialog.getText(self, "Search Packages", "Enter search query:")
+        if ok and query:
+            self.print_output(f"[Executing: search {query}]")
+            self.run_command_thread(f"search {query}")
+    
+    def cmd_kstatus(self):
+        """Kernel status"""
+        if not KERNEL_AVAILABLE:
+            return
+        self.print_output("[Executing: kstatus]")
+        self.run_command_thread("kstatus")
+    
+    def cmd_ps(self):
+        """List processes"""
+        if not KERNEL_AVAILABLE:
+            return
+        self.print_output("[Executing: ps]")
+        self.run_command_thread("ps")
+    
+    def cmd_mem(self):
+        """Memory info"""
+        if not KERNEL_AVAILABLE:
+            return
+        self.print_output("[Executing: mem]")
+        self.run_command_thread("mem")
+    
+    def cmd_lsmod(self):
+        """List drivers"""
+        if not KERNEL_AVAILABLE:
+            return
+        self.print_output("[Executing: lsmod]")
+        self.run_command_thread("lsmod")
+    
+    def cmd_lsdev(self):
+        """List devices"""
+        if not KERNEL_AVAILABLE:
+            return
+        self.print_output("[Executing: lsdev]")
+        self.run_command_thread("lsdev")
+    
+    def cmd_cps(self):
+        """List containers"""
+        if not KERNEL_AVAILABLE:
+            return
+        self.print_output("[Executing: cps -a]")
+        self.run_command_thread("cps -a")
+    
+    def cmd_cimage(self):
+        """List images"""
+        if not KERNEL_AVAILABLE:
+            return
+        self.print_output("[Executing: cimage ls]")
+        self.run_command_thread("cimage ls")
+
+
+# ===== MAIN =====
+
+def main():
+    """Main entry point"""
+    
+    app = QApplication(sys.argv)
+    
+    # Set application style
+    app.setStyle('Fusion')
+    
+    # Create and show GUI
+    gui = KernelGUI()
+    gui.show()
+    
+    print("🖥️  PyQt6 GUI Started")
+    print("💡 Close the window to exit")
+    
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()
