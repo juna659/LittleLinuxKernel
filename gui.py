@@ -86,36 +86,62 @@ class KernelGUI(QMainWindow):
         
         # Window setup
         self.setWindowTitle("Kernel-Add GUI v1.0")
-        self.setGeometry(100, 100, 900, 650)
+        self.setGeometry(100, 100, 1000, 700)  # Larger window
         
         # Central widget
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         
-        # Main layout
+        # Main layout with padding
         main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)  # No margin for title
+        main_layout.setSpacing(0)
         central_widget.setLayout(main_layout)
         
         # ===== TITLE =====
         title_label = QLabel("🐧 KERNEL-ADD CONTROL PANEL")
-        title_font = QFont("Arial", 16, QFont.Weight.Bold)
+        title_font = QFont("Arial", 18, QFont.Weight.Bold)
         title_label.setFont(title_font)
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title_label.setStyleSheet("background-color: #2c3e50; color: white; padding: 10px;")
+        title_label.setStyleSheet("""
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                       stop:0 #2c3e50, stop:1 #34495e);
+            color: white;
+            padding: 15px;
+            border-bottom: 3px solid #3498db;
+        """)
         main_layout.addWidget(title_label)
         
         # ===== CONTENT LAYOUT =====
         content_layout = QHBoxLayout()
+        content_layout.setContentsMargins(10, 10, 10, 10)  # Add padding
+        content_layout.setSpacing(15)  # Space between left and right panels
         main_layout.addLayout(content_layout)
         
         # ===== LEFT PANEL - Buttons =====
         left_panel = QWidget()
-        left_panel.setMaximumWidth(220)
+        left_panel.setMaximumWidth(240)  # Slightly wider
         left_layout = QVBoxLayout()
+        left_layout.setSpacing(10)  # Space between groups
         left_panel.setLayout(left_layout)
         
         # Package Manager Group
         pkg_group = QGroupBox("📦 Package Manager")
+        pkg_group.setFont(QFont("Arial", 11, QFont.Weight.Bold))
+        pkg_group.setStyleSheet("""
+            QGroupBox {
+                font-weight: bold;
+                border: 2px solid #3498db;
+                border-radius: 5px;
+                margin-top: 10px;
+                padding-top: 10px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
+            }
+        """)
         pkg_layout = QVBoxLayout()
         
         self.create_button(pkg_layout, "Update Packages", self.cmd_update)
@@ -127,6 +153,21 @@ class KernelGUI(QMainWindow):
         
         # Kernel Group
         kernel_group = QGroupBox("🐧 Kernel")
+        kernel_group.setFont(QFont("Arial", 11, QFont.Weight.Bold))
+        kernel_group.setStyleSheet("""
+            QGroupBox {
+                font-weight: bold;
+                border: 2px solid #e74c3c;
+                border-radius: 5px;
+                margin-top: 10px;
+                padding-top: 10px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
+            }
+        """)
         kernel_layout = QVBoxLayout()
         
         self.create_button(kernel_layout, "Kernel Status", self.cmd_kstatus)
@@ -138,6 +179,21 @@ class KernelGUI(QMainWindow):
         
         # Drivers Group
         driver_group = QGroupBox("🔧 Drivers")
+        driver_group.setFont(QFont("Arial", 11, QFont.Weight.Bold))
+        driver_group.setStyleSheet("""
+            QGroupBox {
+                font-weight: bold;
+                border: 2px solid #f39c12;
+                border-radius: 5px;
+                margin-top: 10px;
+                padding-top: 10px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
+            }
+        """)
         driver_layout = QVBoxLayout()
         
         self.create_button(driver_layout, "List Drivers", self.cmd_lsmod)
@@ -148,6 +204,21 @@ class KernelGUI(QMainWindow):
         
         # Containers Group
         container_group = QGroupBox("🐳 Containers")
+        container_group.setFont(QFont("Arial", 11, QFont.Weight.Bold))
+        container_group.setStyleSheet("""
+            QGroupBox {
+                font-weight: bold;
+                border: 2px solid #9b59b6;
+                border-radius: 5px;
+                margin-top: 10px;
+                padding-top: 10px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
+            }
+        """)
         container_layout = QVBoxLayout()
         
         self.create_button(container_layout, "List Containers", self.cmd_cps)
@@ -157,8 +228,25 @@ class KernelGUI(QMainWindow):
         left_layout.addWidget(container_group)
         
         # System buttons
-        clear_btn = QPushButton("Clear Output")
-        clear_btn.setStyleSheet("background-color: #e74c3c; color: white; font-weight: bold;")
+        clear_btn = QPushButton("🗑️  Clear Output")
+        clear_btn.setMinimumHeight(40)
+        clear_btn.setFont(QFont("Arial", 11, QFont.Weight.Bold))
+        clear_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #e74c3c;
+                color: white;
+                border: none;
+                border-radius: 5px;
+                padding: 8px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #c0392b;
+            }
+            QPushButton:pressed {
+                background-color: #a93226;
+            }
+        """)
         clear_btn.clicked.connect(self.clear_output)
         left_layout.addWidget(clear_btn)
         
@@ -172,37 +260,74 @@ class KernelGUI(QMainWindow):
         right_panel.setLayout(right_layout)
         
         # Output label
-        output_label = QLabel("Output Console:")
-        output_label.setFont(QFont("Arial", 10, QFont.Weight.Bold))
+        output_label = QLabel("📺 Output Console:")
+        output_label.setFont(QFont("Arial", 12, QFont.Weight.Bold))
+        output_label.setStyleSheet("color: #2c3e50; padding: 5px;")
         right_layout.addWidget(output_label)
         
         # Output console
         self.output_text = QTextEdit()
         self.output_text.setReadOnly(True)
-        self.output_text.setFont(QFont("Courier", 9))
+        self.output_text.setFont(QFont("Consolas", 11))  # Larger font
         
-        # Terminal style
-        palette = self.output_text.palette()
-        palette.setColor(QPalette.ColorRole.Base, QColor("#1e1e1e"))
-        palette.setColor(QPalette.ColorRole.Text, QColor("#00ff00"))
-        self.output_text.setPalette(palette)
+        # Terminal style with better contrast
+        self.output_text.setStyleSheet("""
+            QTextEdit {
+                background-color: #0d1117;
+                color: #58d68d;
+                border: 2px solid #34495e;
+                border-radius: 5px;
+                padding: 10px;
+            }
+        """)
         
         right_layout.addWidget(self.output_text)
         
         # Command input
         cmd_layout = QHBoxLayout()
         
-        cmd_label = QLabel("Command:")
-        cmd_label.setFont(QFont("Arial", 10))
+        cmd_label = QLabel("⌨️  Command:")
+        cmd_label.setFont(QFont("Arial", 11, QFont.Weight.Bold))
+        cmd_label.setStyleSheet("color: #2c3e50;")
         cmd_layout.addWidget(cmd_label)
         
         self.command_input = QLineEdit()
-        self.command_input.setFont(QFont("Courier", 10))
+        self.command_input.setFont(QFont("Consolas", 11))
+        self.command_input.setPlaceholderText("Type command here...")
+        self.command_input.setMinimumHeight(35)
+        self.command_input.setStyleSheet("""
+            QLineEdit {
+                border: 2px solid #3498db;
+                border-radius: 5px;
+                padding: 5px 10px;
+                background-color: white;
+            }
+            QLineEdit:focus {
+                border: 2px solid #2980b9;
+            }
+        """)
         self.command_input.returnPressed.connect(self.execute_command)
         cmd_layout.addWidget(self.command_input)
         
-        exec_btn = QPushButton("Execute")
-        exec_btn.setStyleSheet("background-color: #27ae60; color: white; font-weight: bold;")
+        exec_btn = QPushButton("▶️  Execute")
+        exec_btn.setMinimumHeight(35)
+        exec_btn.setFont(QFont("Arial", 11, QFont.Weight.Bold))
+        exec_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #27ae60;
+                color: white;
+                border: none;
+                border-radius: 5px;
+                padding: 5px 15px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #229954;
+            }
+            QPushButton:pressed {
+                background-color: #1e8449;
+            }
+        """)
         exec_btn.clicked.connect(self.execute_command)
         cmd_layout.addWidget(exec_btn)
         
@@ -211,11 +336,19 @@ class KernelGUI(QMainWindow):
         content_layout.addWidget(right_panel)
         
         # ===== STATUS BAR =====
-        self.statusBar().setStyleSheet("background-color: #34495e; color: white;")
+        self.statusBar().setStyleSheet("""
+            QStatusBar {
+                background-color: #34495e;
+                color: white;
+                font-size: 11pt;
+                font-weight: bold;
+                padding: 5px;
+            }
+        """)
         if KERNEL_AVAILABLE:
-            self.statusBar().showMessage("✅ Kernel loaded - Ready")
+            self.statusBar().showMessage("✅ Kernel loaded successfully - Ready to execute commands")
         else:
-            self.statusBar().showMessage("❌ Kernel not available - Demo mode")
+            self.statusBar().showMessage("❌ Kernel not available - Running in demo mode")
         
         # ===== WELCOME MESSAGE =====
         self.print_output("=" * 70)
@@ -225,15 +358,34 @@ class KernelGUI(QMainWindow):
         self.print_output("")
         if KERNEL_AVAILABLE:
             self.print_output("✅ Kernel loaded successfully")
-            self.print_output("💡 Click buttons or type commands below")
+            self.print_output("💡 Click 'Update Packages' to fetch real packages from Alpine")
+            self.print_output("💡 Or use buttons for quick commands")
         else:
             self.print_output("❌ Kernel not available - GUI demo mode")
         self.print_output("")
     
     def create_button(self, layout, text, callback):
-        """Helper untuk create button"""
+        """Helper untuk create button dengan style bagus"""
         btn = QPushButton(text)
         btn.clicked.connect(callback)
+        btn.setMinimumHeight(35)  # Tinggi button
+        btn.setFont(QFont("Arial", 10))  # Font size
+        btn.setStyleSheet("""
+            QPushButton {
+                background-color: #3498db;
+                color: white;
+                border: none;
+                border-radius: 5px;
+                padding: 5px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #2980b9;
+            }
+            QPushButton:pressed {
+                background-color: #21618c;
+            }
+        """)
         layout.addWidget(btn)
         return btn
     
