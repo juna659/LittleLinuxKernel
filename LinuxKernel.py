@@ -334,6 +334,28 @@ class DatabaseManager:
             print(f"❌ Repair failed: {e}")
             return False
     
+    def check_package_exists(self, name: str) -> bool:
+        """Check if package exists"""
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute('SELECT name FROM packages WHERE name = ?', (name,))
+            return cursor.fetchone() is not None
+        except sqlite3.Error:
+            return False
+    
+    def remove_package_safe(self, name: str) -> bool:
+        """Safely remove package (no error if not exists)"""
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute('DELETE FROM packages WHERE name = ?', (name,))
+            cursor.execute('DELETE FROM dependencies WHERE package = ? OR depends_on = ?', 
+                          (name, name))
+            self.conn.commit()
+            return True
+        except sqlite3.Error as e:
+            print(f"⚠️  Error removing package: {e}")
+            return False
+    
     def close(self):
         """Close database connection"""
         if self.conn:
@@ -411,28 +433,130 @@ class AddPackageManager:
     
     def update(self) -> bool:
         """Update package list dari mirror"""
-        print("🔄 Updating package list...")
+        print("🔄 Updating package list from mirrors...")
         
-        # Try different package list locations based on mirror
-        package_paths = [
-            f"dists/stable/main/binary-{self.arch}/Packages",  # Termux style
-            f"dists/jammy/main/binary-{self.arch}/Packages",   # Ubuntu style
-            f"8/BaseOS/{self.arch}/os/repodata/repomd.xml",    # Rocky Linux style
-            f"edge/main/{self.arch}/APKINDEX.tar.gz",          # Alpine Linux style
-            f"core/os/{self.arch}/core.db"                     # Arch Linux style
-        ]
+        # Try Alpine mirror first (most reliable for our use case)
+        print("📦 Fetching from Alpine Linux mirror...")
+        alpine_url = "https://dl-cdn.alpinelinux.org/alpine/v3.19/main/x86_64/APKINDEX.tar.gz"
+        packages_local = f"{self.prefix}/var/cache/add/APKINDEX.tar.gz"
         
-        for pkg_path in package_paths:
-            packages_url = pkg_path
-            packages_local = f"{self.prefix}/var/cache/add/Packages"
-            
-            if self._download(packages_url, packages_local):
-                if self._parse_packages(packages_local):
-                    return True
+        if self._download_direct(alpine_url, packages_local):
+            if self._parse_apkindex(packages_local):
+                print(f"✅ Package list updated from Alpine Linux")
+                return True
         
-        print("⚠️  Using fallback: creating dummy package index")
+        # Fallback to dummy if Alpine fails
+        print("⚠️  Alpine mirror failed, using fallback dummy index")
         self._create_dummy_index()
         return True
+    
+    def _download_direct(self, url: str, dest: str) -> bool:
+        """Download file directly (without mirror rotation)"""
+        try:
+            print(f"   Downloading {url}...")
+            req = urllib.request.Request(
+                url,
+                headers={'User-Agent': 'kernel-add/1.0'}
+            )
+            
+            with urllib.request.urlopen(req, timeout=30) as response:
+                total_size = int(response.headers.get('content-length', 0))
+                
+                with open(dest, 'wb') as f:
+                    downloaded = 0
+                    chunk_size = 8192
+                    
+                    while True:
+                        chunk = response.read(chunk_size)
+                        if not chunk:
+                            break
+                        
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        
+                        if total_size > 0:
+                            percent = (downloaded / total_size) * 100
+                            bar_length = 30
+                            filled = int(bar_length * downloaded // total_size)
+                            bar = '█' * filled + '░' * (bar_length - filled)
+                            print(f"\r   [{bar}] {percent:.1f}%", end='', flush=True)
+                    
+                    print()  # New line after progress
+            
+            return True
+            
+        except Exception as e:
+            print(f"\r   ❌ Download failed: {e}")
+            return False
+    
+    def _parse_apkindex(self, apkindex_path: str) -> bool:
+        """Parse Alpine APKINDEX.tar.gz file"""
+        try:
+            import tarfile
+            
+            print(f"   Parsing APKINDEX...")
+            packages = {}
+            
+            # Extract APKINDEX from tar.gz
+            with tarfile.open(apkindex_path, 'r:gz') as tar:
+                # APKINDEX file is usually named just "APKINDEX"
+                for member in tar.getmembers():
+                    if 'APKINDEX' in member.name and member.isfile():
+                        f = tar.extractfile(member)
+                        if f:
+                            content = f.read().decode('utf-8', errors='ignore')
+                            packages = self._parse_apkindex_content(content)
+                            break
+            
+            if packages:
+                self.packages_index = packages
+                
+                # Save to JSON cache
+                with open(self.index_file, 'w') as f:
+                    json.dump(packages, f, indent=2)
+                
+                print(f"   ✅ Parsed {len(packages)} packages from Alpine")
+                return True
+            
+            return False
+            
+        except Exception as e:
+            print(f"   ⚠️  Error parsing APKINDEX: {e}")
+            return False
+    
+    def _parse_apkindex_content(self, content: str) -> Dict:
+        """Parse APKINDEX content into package dict"""
+        packages = {}
+        current_pkg = {}
+        
+        for line in content.split('\n'):
+            line = line.strip()
+            
+            if line == '':
+                # Empty line = end of package entry
+                if current_pkg and 'P' in current_pkg:
+                    pkg_name = current_pkg['P']
+                    
+                    # Convert to our format
+                    packages[pkg_name] = {
+                        'Package': pkg_name,
+                        'Version': current_pkg.get('V', 'unknown'),
+                        'Architecture': current_pkg.get('A', 'x86_64'),
+                        'Description': current_pkg.get('T', 'No description'),
+                        'Size': int(current_pkg.get('S', 0)),
+                        'Filename': f"{pkg_name}-{current_pkg.get('V', '0')}.apk",
+                        'License': current_pkg.get('L', 'unknown'),
+                        'URL': current_pkg.get('U', ''),
+                        'Depends': current_pkg.get('D', '')
+                    }
+                
+                current_pkg = {}
+            
+            elif ':' in line:
+                key, value = line.split(':', 1)
+                current_pkg[key] = value.strip()
+        
+        return packages
     
     def _parse_packages(self, packages_path: str) -> bool:
         """Parse Packages file"""
@@ -472,21 +596,21 @@ class AddPackageManager:
     def _create_dummy_index(self):
         """Buat dummy package index untuk testing"""
         dummy_packages = {
-            'python': {
-                'Package': 'python',
-                'Version': '3.11.0',
+            'python3': {
+                'Package': 'python3',
+                'Version': '3.11.6',
                 'Architecture': self.arch,
-                'Description': 'Python programming language',
+                'Description': 'Python programming language interpreter',
                 'Size': '15000000',
-                'Filename': f'pool/main/p/python/python_3.11.0_{self.arch}.deb'
+                'Filename': f'python3-3.11.6-{self.arch}.apk'
             },
             'curl': {
                 'Package': 'curl',
                 'Version': '8.5.0',
                 'Architecture': self.arch,
-                'Description': 'Command line tool for transferring data',
+                'Description': 'Command line tool for transferring data with URLs',
                 'Size': '500000',
-                'Filename': f'pool/main/c/curl/curl_8.5.0_{self.arch}.deb'
+                'Filename': f'curl-8.5.0-{self.arch}.apk'
             },
             'git': {
                 'Package': 'git',
@@ -494,23 +618,79 @@ class AddPackageManager:
                 'Architecture': self.arch,
                 'Description': 'Fast, scalable, distributed revision control system',
                 'Size': '8000000',
-                'Filename': f'pool/main/g/git/git_2.43.0_{self.arch}.deb'
+                'Filename': f'git-2.43.0-{self.arch}.apk'
             },
             'vim': {
                 'Package': 'vim',
-                'Version': '9.0',
+                'Version': '9.0.2121',
                 'Architecture': self.arch,
                 'Description': 'Vi IMproved - enhanced vi editor',
                 'Size': '3500000',
-                'Filename': f'pool/main/v/vim/vim_9.0_{self.arch}.deb'
+                'Filename': f'vim-9.0.2121-{self.arch}.apk'
             },
             'nodejs': {
                 'Package': 'nodejs',
                 'Version': '20.10.0',
                 'Architecture': self.arch,
-                'Description': 'JavaScript runtime built on Chrome V8',
+                'Description': 'JavaScript runtime built on Chrome V8 engine',
                 'Size': '12000000',
-                'Filename': f'pool/main/n/nodejs/nodejs_20.10.0_{self.arch}.deb'
+                'Filename': f'nodejs-20.10.0-{self.arch}.apk'
+            },
+            'nginx': {
+                'Package': 'nginx',
+                'Version': '1.24.0',
+                'Architecture': self.arch,
+                'Description': 'HTTP and reverse proxy server',
+                'Size': '1200000',
+                'Filename': f'nginx-1.24.0-{self.arch}.apk'
+            },
+            'docker': {
+                'Package': 'docker',
+                'Version': '24.0.7',
+                'Architecture': self.arch,
+                'Description': 'Pack, ship and run any application as a container',
+                'Size': '25000000',
+                'Filename': f'docker-24.0.7-{self.arch}.apk'
+            },
+            'postgresql': {
+                'Package': 'postgresql',
+                'Version': '16.1',
+                'Architecture': self.arch,
+                'Description': 'Sophisticated object-relational DBMS',
+                'Size': '18000000',
+                'Filename': f'postgresql-16.1-{self.arch}.apk'
+            },
+            'redis': {
+                'Package': 'redis',
+                'Version': '7.2.3',
+                'Architecture': self.arch,
+                'Description': 'Advanced key-value store',
+                'Size': '2500000',
+                'Filename': f'redis-7.2.3-{self.arch}.apk'
+            },
+            'gcc': {
+                'Package': 'gcc',
+                'Version': '13.2.0',
+                'Architecture': self.arch,
+                'Description': 'GNU Compiler Collection',
+                'Size': '45000000',
+                'Filename': f'gcc-13.2.0-{self.arch}.apk'
+            },
+            'bash': {
+                'Package': 'bash',
+                'Version': '5.2.21',
+                'Architecture': self.arch,
+                'Description': 'GNU Bourne Again shell',
+                'Size': '1800000',
+                'Filename': f'bash-5.2.21-{self.arch}.apk'
+            },
+            'openssh': {
+                'Package': 'openssh',
+                'Version': '9.6',
+                'Architecture': self.arch,
+                'Description': 'OpenSSH remote login client and server',
+                'Size': '2200000',
+                'Filename': f'openssh-9.6-{self.arch}.apk'
             }
         }
         
@@ -519,7 +699,8 @@ class AddPackageManager:
         with open(self.index_file, 'w') as f:
             json.dump(dummy_packages, f, indent=2)
         
-        print(f"📦 Dummy index created with {len(dummy_packages)} packages")
+        print(f"📦 Fallback index created with {len(dummy_packages)} packages")
+        print(f"💡 Run 'update' again to fetch from real Alpine mirror")
     
     def search(self, query: str) -> List[Dict]:
         """Search packages"""
@@ -1137,8 +1318,25 @@ class ContainerEngine:
     def create_image(self, name: str, tag: str = 'latest', base_image: str = None) -> str:
         """Create container image"""
         try:
-            image_id = self._generate_id('img_')
+            # Check if image already exists
             cursor = self.db_manager.conn.cursor()
+            cursor.execute('SELECT id FROM images WHERE name = ? AND tag = ?', (name, tag))
+            existing = cursor.fetchone()
+            
+            if existing:
+                print(f"⚠️  Image already exists: {name}:{tag}")
+                print(f"   Image ID: {existing[0]}")
+                return existing[0]
+            
+            # Generate unique ID
+            image_id = self._generate_id('img_')
+            
+            # Ensure ID is unique
+            while True:
+                cursor.execute('SELECT id FROM images WHERE id = ?', (image_id,))
+                if not cursor.fetchone():
+                    break
+                image_id = self._generate_id('img_')
             
             # Simulate image layers
             layers = json.dumps(['layer_base', 'layer_app', 'layer_config'])
@@ -1156,6 +1354,9 @@ class ContainerEngine:
             
         except sqlite3.Error as e:
             print(f"❌ Failed to create image: {e}")
+            print(f"   Details: name={name}, tag={tag}")
+            import traceback
+            traceback.print_exc()
             return None
     
     def list_images(self) -> List[Dict]:
@@ -1165,10 +1366,15 @@ class ContainerEngine:
             cursor.execute('SELECT * FROM images ORDER BY created_time DESC')
             images = []
             for row in cursor.fetchall():
-                images.append(dict(row))
+                try:
+                    images.append(dict(row))
+                except Exception as e:
+                    print(f"⚠️  Skipping corrupted image entry: {e}")
+                    continue
             return images
         except sqlite3.Error as e:
             print(f"⚠️  Error listing images: {e}")
+            print(f"💡 Try: dbfix")
             return []
     
     def create_container(self, name: str, image: str, command: str = '/bin/sh',
@@ -1183,10 +1389,29 @@ class ContainerEngine:
             
             if not img:
                 print(f"❌ Image not found: {image}")
+                print(f"💡 Create an image first with: cimage create {image}")
                 return None
             
             image_id = img[0]
+            
+            # Check if container name already exists
+            cursor.execute('SELECT id FROM containers WHERE name = ?', (name,))
+            existing = cursor.fetchone()
+            
+            if existing:
+                print(f"❌ Container name already exists: {name}")
+                print(f"   Use a different name or remove existing container with: crm {name} -f")
+                return None
+            
+            # Generate unique container ID
             container_id = self._generate_id('ctr_')
+            
+            # Ensure ID is unique
+            while True:
+                cursor.execute('SELECT id FROM containers WHERE id = ?', (container_id,))
+                if not cursor.fetchone():
+                    break
+                container_id = self._generate_id('ctr_')
             
             # Allocate IP address
             ip_addr = f"172.17.0.{len(self.network['bridge0']['containers']) + 2}"
@@ -1212,6 +1437,9 @@ class ContainerEngine:
             
         except sqlite3.Error as e:
             print(f"❌ Failed to create container: {e}")
+            print(f"   Details: name={name}, image={image}")
+            import traceback
+            traceback.print_exc()
             return None
     
     def start_container(self, name_or_id: str) -> bool:
@@ -1339,11 +1567,16 @@ class ContainerEngine:
             
             containers = []
             for row in cursor.fetchall():
-                containers.append(dict(row))
+                try:
+                    containers.append(dict(row))
+                except Exception as e:
+                    print(f"⚠️  Skipping corrupted container entry: {e}")
+                    continue
             return containers
             
         except sqlite3.Error as e:
             print(f"⚠️  Error listing containers: {e}")
+            print(f"💡 Try: dbfix or cclean")
             return []
     
     def exec_container(self, name_or_id: str, command: str) -> str:
@@ -1466,6 +1699,8 @@ class KernelAddCLI:
             
             # Database Management
             'repair': self._cmd_repair,
+            'dbfix': self._cmd_dbfix,
+            'dbclean': self._cmd_dbclean,
             
             # Container Commands
             'cimage': self._cmd_cimage,
@@ -1477,6 +1712,7 @@ class KernelAddCLI:
             'cexec': self._cmd_cexec,
             'cinspect': self._cmd_cinspect,
             'cnetwork': self._cmd_cnetwork,
+            'cclean': self._cmd_cclean,
             
             # Driver Commands
             'lsmod': self._cmd_lsmod,
@@ -2082,6 +2318,124 @@ Type 'exit' to return to main shell
             print("\n❌ Database repair failed")
             print("💡 Check backup files in var/lib/add/")
     
+    def _cmd_dbfix(self, args):
+        """Fix common database issues (duplicates, constraints)"""
+        print("🔧 Running database diagnostics and fixes...")
+        print("")
+        
+        try:
+            cursor = self.pm.db_manager.conn.cursor()
+            
+            # Check 1: Find duplicate packages
+            print("1️⃣ Checking for duplicate packages...")
+            cursor.execute('''
+                SELECT name, COUNT(*) as count 
+                FROM packages 
+                GROUP BY name 
+                HAVING count > 1
+            ''')
+            duplicates = cursor.fetchall()
+            
+            if duplicates:
+                print(f"   Found {len(duplicates)} duplicate(s)")
+                for dup in duplicates:
+                    print(f"   - {dup[0]}: {dup[1]} entries")
+            else:
+                print("   ✅ No duplicates found")
+            
+            # Check 2: Fix container constraints
+            print("\n2️⃣ Checking container constraints...")
+            cursor.execute('SELECT COUNT(*) FROM containers')
+            container_count = cursor.fetchone()[0]
+            print(f"   Total containers: {container_count}")
+            
+            # Check 3: Fix image constraints
+            print("\n3️⃣ Checking image constraints...")
+            cursor.execute('SELECT COUNT(*) FROM images')
+            image_count = cursor.fetchone()[0]
+            print(f"   Total images: {image_count}")
+            
+            # Check 4: Orphaned dependencies
+            print("\n4️⃣ Checking orphaned dependencies...")
+            cursor.execute('''
+                SELECT COUNT(*) FROM dependencies 
+                WHERE package NOT IN (SELECT name FROM packages)
+                   OR depends_on NOT IN (SELECT name FROM packages)
+            ''')
+            orphaned_deps = cursor.fetchone()[0]
+            
+            if orphaned_deps > 0:
+                print(f"   Found {orphaned_deps} orphaned dependencies")
+                print("   Cleaning...")
+                cursor.execute('''
+                    DELETE FROM dependencies 
+                    WHERE package NOT IN (SELECT name FROM packages)
+                       OR depends_on NOT IN (SELECT name FROM packages)
+                ''')
+                self.pm.db_manager.conn.commit()
+                print("   ✅ Cleaned")
+            else:
+                print("   ✅ No orphaned dependencies")
+            
+            # Check 5: Database integrity
+            print("\n5️⃣ Running PRAGMA integrity_check...")
+            cursor.execute('PRAGMA integrity_check')
+            integrity = cursor.fetchone()[0]
+            
+            if integrity == 'ok':
+                print("   ✅ Database integrity OK")
+            else:
+                print(f"   ⚠️  Integrity check: {integrity}")
+            
+            print("\n✅ Database diagnostics complete")
+            
+        except Exception as e:
+            print(f"❌ Error during dbfix: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def _cmd_dbclean(self, args):
+        """Clean ALL database data (RESET)"""
+        print("\n⚠️  ⚠️  ⚠️  DANGER ZONE ⚠️  ⚠️  ⚠️")
+        print("This will DELETE ALL DATA:")
+        print("  - All installed packages")
+        print("  - All containers and images")
+        print("  - All hidden files")
+        print("  - All dependencies")
+        print("")
+        
+        confirm = input("Type 'DELETE EVERYTHING' to confirm: ").strip()
+        
+        if confirm != 'DELETE EVERYTHING':
+            print("❌ Cancelled (safe!)")
+            return
+        
+        print("\n🗑️  Deleting all data...")
+        
+        try:
+            cursor = self.pm.db_manager.conn.cursor()
+            
+            # Delete all data from all tables
+            tables = ['packages', 'dependencies', 'hidden_files', 
+                     'containers', 'images', 'volumes', 'metadata']
+            
+            for table in tables:
+                try:
+                    cursor.execute(f'DELETE FROM {table}')
+                    deleted = cursor.rowcount
+                    print(f"   ✅ Deleted {deleted} rows from {table}")
+                except sqlite3.Error as e:
+                    print(f"   ⚠️  {table}: {e}")
+            # Commit changes
+            self.pm.db_manager.conn.commit()
+            cursor.close()
+
+            print("\n✅ Database cleaned successfully")
+            print("💡 All data has been removed. Start fresh!")
+            
+        except Exception as e:
+            print(f"❌ Error during cleanup: {e}")
+    
     # ===== CONTAINER ENGINE COMMANDS =====
     
     def _cmd_cimage(self, args):
@@ -2259,6 +2613,46 @@ Type 'exit' to return to main shell
             print("="*70)
         else:
             print(f"❌ Network not found: {network_name}")
+    
+    def _cmd_cclean(self, args):
+        """Clean all container data (reset)"""
+        if not self.container:
+            print("❌ Container engine not available")
+            return
+        
+        print("⚠️  WARNING: This will delete ALL containers and images!")
+        confirm = input("Are you sure? Type 'yes' to confirm: ").strip().lower()
+        
+        if confirm != 'yes':
+            print("❌ Cancelled")
+            return
+        
+        try:
+            cursor = self.pm.db_manager.conn.cursor()
+            
+            # Delete all containers
+            cursor.execute('DELETE FROM containers')
+            deleted_containers = cursor.rowcount
+            
+            # Delete all images
+            cursor.execute('DELETE FROM images')
+            deleted_images = cursor.rowcount
+            
+            # Delete all volumes
+            cursor.execute('DELETE FROM volumes')
+            
+            self.pm.db_manager.conn.commit()
+            
+            # Reset network
+            self.container.network['bridge0']['containers'] = {}
+            
+            print(f"✅ Container data cleaned")
+            print(f"   Deleted {deleted_containers} container(s)")
+            print(f"   Deleted {deleted_images} image(s)")
+            print(f"💡 You can now create fresh containers without conflicts")
+            
+        except Exception as e:
+            print(f"❌ Error cleaning container data: {e}")
     
     # ===== DRIVER MANAGEMENT COMMANDS =====
     
@@ -2493,6 +2887,8 @@ Type 'exit' to return to main shell
 
 🔧 DATABASE MANAGEMENT:
   repair              Repair corrupted SQLite database
+  dbfix               Fix common database issues
+  dbclean             Clean ALL database data (RESET)
 
 🐳 CONTAINER ENGINE:
   cimage ls           List container images
@@ -2505,6 +2901,7 @@ Type 'exit' to return to main shell
   cexec <ctr> <cmd>   Execute command in container
   cinspect <ctr>      Inspect container details
   cnetwork [name]     Inspect container network
+  cclean              Clean all container data (RESET)
 
 🔧 DRIVER MANAGEMENT:
   lsmod               List loaded drivers
