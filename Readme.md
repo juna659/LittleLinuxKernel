@@ -9,7 +9,7 @@ kernel-add/
 ├── LinuxKernel.py      # Main kernel & package manager
 ├── KernelDriver.py     # Hardware driver system
 ├── gui.py              # Simple GUI interface
-└── README.md           # This file
+└── Readme.md           # This file
 ```
 
 ## 🚀 Quick Start

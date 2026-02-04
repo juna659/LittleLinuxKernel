@@ -401,6 +401,12 @@ class AddPackageManager:
         self.packages_index = {}
         self.mirror_idx = 0
         self.current_mirror = self.MIRRORS[0]
+        self.alpine_version = "v3.19"
+        self.alpine_repo = "main"
+        self.alpine_base_url = (
+            f"https://dl-cdn.alpinelinux.org/alpine/"
+            f"{self.alpine_version}/{self.alpine_repo}/{self.arch}"
+        )
     
     def _detect_architecture(self) -> str:
         """Deteksi architecture sistem"""
@@ -424,6 +430,7 @@ class AddPackageManager:
             f"{self.prefix}/share",
             f"{self.prefix}/var/lib/add",
             f"{self.prefix}/var/cache/add",
+            f"{self.prefix}/rootfs",
             f"{self.prefix}/tmp",
             f"{self.prefix}/kernel"
         ]
@@ -437,7 +444,7 @@ class AddPackageManager:
         
         # Try Alpine mirror first (most reliable for our use case)
         print("📦 Fetching from Alpine Linux mirror...")
-        alpine_url = "https://dl-cdn.alpinelinux.org/alpine/v3.19/main/x86_64/APKINDEX.tar.gz"
+        alpine_url = f"{self.alpine_base_url}/APKINDEX.tar.gz"
         packages_local = f"{self.prefix}/var/cache/add/APKINDEX.tar.gz"
         
         if self._download_direct(alpine_url, packages_local):
@@ -523,6 +530,80 @@ class AddPackageManager:
         except Exception as e:
             print(f"   ⚠️  Error parsing APKINDEX: {e}")
             return False
+
+    def _safe_extract(self, tar: tarfile.TarFile, path: str) -> None:
+        """Safely extract tar to avoid path traversal."""
+        base_path = os.path.realpath(path)
+        for member in tar.getmembers():
+            member_path = os.path.realpath(os.path.join(base_path, member.name))
+            if not member_path.startswith(base_path + os.sep):
+                raise Exception(f"Blocked unsafe path: {member.name}")
+        tar.extractall(path)
+
+    def _extract_apk(self, apk_path: str) -> bool:
+        """Extract Alpine .apk to rootfs (best effort)."""
+        import io
+        import tarfile
+
+        rootfs_path = f"{self.prefix}/rootfs"
+        try:
+            with tarfile.open(apk_path, 'r:gz') as apk_tar:
+                data_member = None
+                for member in apk_tar.getmembers():
+                    if member.isfile() and member.name.startswith("data.tar"):
+                        data_member = member
+                        break
+
+                if not data_member:
+                    print("⚠️  data archive not found in APK")
+                    return False
+
+                data_file = apk_tar.extractfile(data_member)
+                if not data_file:
+                    print("⚠️  Unable to read data archive from APK")
+                    return False
+
+                data_bytes = data_file.read()
+                data_name = data_member.name
+
+            if data_name.endswith(".gz"):
+                data_tar = tarfile.open(fileobj=io.BytesIO(data_bytes), mode="r:gz")
+            elif data_name.endswith(".xz"):
+                data_tar = tarfile.open(fileobj=io.BytesIO(data_bytes), mode="r:xz")
+            elif data_name.endswith(".zst"):
+                print("⚠️  data.tar.zst not supported without zstandard module")
+                return False
+            else:
+                data_tar = tarfile.open(fileobj=io.BytesIO(data_bytes), mode="r:")
+
+            with data_tar:
+                self._safe_extract(data_tar, rootfs_path)
+
+            return True
+        except Exception as e:
+            print(f"⚠️  Failed to extract APK: {e}")
+            return False
+
+    def _download_package(self, pkg_info: Dict) -> Optional[str]:
+        """Download a package from Alpine mirror."""
+        filename = pkg_info.get('Filename')
+        if not filename:
+            print("❌ Package filename missing in index")
+            return None
+
+        url = f"{self.alpine_base_url}/{filename}"
+        dest = f"{self.prefix}/var/cache/add/{filename}"
+
+        if os.path.exists(dest):
+            print(f"📦 Using cached package: {dest}")
+            return dest
+
+        if self._download_direct(url, dest):
+            print(f"✅ Package downloaded: {dest}")
+            return dest
+
+        print("❌ Package download failed")
+        return None
     
     def _parse_apkindex_content(self, content: str) -> Dict:
         """Parse APKINDEX content into package dict"""
@@ -757,13 +838,18 @@ class AddPackageManager:
             print(f"   Version: {pkg_info.get('Version')}")
             print(f"   Size: {int(pkg_info.get('Size', 0)):,} bytes")
         else:
-            # Simulate installation
-            print(f"📥 Downloading {package_name}...")
-            time.sleep(0.5)
-            print(f"📂 Extracting package...")
-            time.sleep(0.3)
+            apk_path = self._download_package(pkg_info)
+            if not apk_path:
+                return False
+
+            print("📂 Extracting package...")
+            extracted = self._extract_apk(apk_path)
+            if extracted:
+                print(f"✅ Extracted into {self.prefix}/rootfs")
+            else:
+                print("⚠️  Package extracted with warnings (check logs)")
+
             print(f"⚙️  Configuring {package_name}...")
-            time.sleep(0.2)
         
         # Add to SQLite database
         self.db_manager.add_package(
