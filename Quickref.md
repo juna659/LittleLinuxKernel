@@ -28,8 +28,8 @@ kernel-add/
 ├── KernelDriver.py     # Driver system (700+ lines)
 ├── gui.py              # PyQt6 GUI (350+ lines)
 ├── install.sh          # Installation helper
-├── README.md           # Full documentation
-└── QUICKREF.md         # This file
+├── Readme.md           # Full documentation
+└── Quickref.md         # This file
 ```
 
 ## ⚡ Quick Commands
